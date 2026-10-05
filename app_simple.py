@@ -61,6 +61,7 @@ image_tab, video_tab = st.tabs(["ตรวจภาพ", "ตรวจวิด�
 with image_tab:
     photo = st.file_uploader("เลือกภาพกล้วย", type=["jpg", "jpeg", "png", "webp"])
     if photo and st.button("วิเคราะห์ภาพ"):
+        st.session_state.pop("photo_result", None)
         try:
             image = Image.open(photo).convert("RGB")
             result = model.predict(image, conf=confidence, iou=iou, verbose=False)[0]
@@ -82,10 +83,11 @@ with image_tab:
 
 with video_tab:
     video = st.file_uploader("เลือกวิดีโอ", type=["mp4"])
-    step = st.selectbox("ตรวจทุกกี่เฟรม", [1, 2, 5, 10], index=2)
-    limit = st.number_input("จำนวนเฟรมที่ตรวจสูงสุด", min_value=10, max_value=1000, value=300, step=10)
+    step = st.selectbox("ตรวจทุกกี่เฟรม (เลือก 1 เพื่อติดตามได้แม่นยำสุด)", [1, 2, 5, 10])
+    limit = st.number_input("จำนวนเฟรมที่ตรวจสูงสุด", min_value=10, max_value=3000, value=900, step=10)
 
     if video and st.button("วิเคราะห์วิดีโอ"):
+        st.session_state.pop("video_result", None)
         try:
             with tempfile.TemporaryDirectory() as folder:
                 input_file = Path(folder) / "input.mp4"
@@ -97,10 +99,16 @@ with video_tab:
                     raise ValueError("เปิดวิดีโอไม่ได้")
 
                 fps = capture.get(cv2.CAP_PROP_FPS) or 25
+                # โหลดใหม่ทุกคลิป เพื่อไม่ให้ ByteTrack จำ ID จากคลิปก่อน
+                track_model = YOLO(str(MODEL_FILE))
                 writer = None
                 frame_no = 0
                 checked = 0
-                rows = []
+                rows = []  # เก็บเฉพาะกล้วยที่ข้ามเส้น
+                last_side = {}  # ID -> อยู่เหนือหรือใต้เส้น
+                counted_ids = set()
+                up_count = 0
+                down_count = 0
                 progress = st.progress(0)
 
                 try:
@@ -112,10 +120,45 @@ with video_tab:
                         if (frame_no - 1) % step != 0:
                             continue
 
-                        result = model.predict(frame, conf=confidence, iou=iou, verbose=False)[0]
+                        result = track_model.track(
+                            frame, persist=True, tracker="bytetrack.yaml",
+                            conf=confidence, iou=iou, verbose=False
+                        )[0]
                         marked = result.plot()  # OpenCV ใช้ภาพแบบ BGR อยู่แล้ว
+                        height, width = marked.shape[:2]
+                        middle = height // 2
+
+                        if result.boxes is not None and result.boxes.id is not None:
+                            ids = result.boxes.id.int().cpu().tolist()
+                            for box, track_id in zip(result.boxes, ids):
+                                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                                center_y = (y1 + y2) / 2
+                                side = -1 if center_y < middle else 1
+                                before = last_side.get(track_id)
+
+                                if before is not None and before != side and track_id not in counted_ids:
+                                    direction = "ลง" if side == 1 else "ขึ้น"
+                                    if side == 1:
+                                        down_count += 1
+                                    else:
+                                        up_count += 1
+                                    counted_ids.add(track_id)
+                                    rows.append({
+                                        "วินาที": round((frame_no - 1) / fps, 2),
+                                        "Track ID": track_id,
+                                        "ทิศทาง": direction,
+                                        "ระดับความสุก": THAI_NAMES[int(box.cls.item())],
+                                    })
+                                last_side[track_id] = side
+
+                        # วาดเส้นกลางภาพและยอดนับลงบนทุกเฟรม
+                        cv2.line(marked, (0, middle), (width - 1, middle), (0, 255, 255), 2)
+                        label = f"Crossed: {len(counted_ids)}  Up: {up_count}  Down: {down_count}"
+                        cv2.putText(marked, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7, (0, 0, 0), 4)
+                        cv2.putText(marked, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.7, (255, 255, 255), 2)
                         if writer is None:
-                            height, width = marked.shape[:2]
                             writer = cv2.VideoWriter(
                                 str(raw_file), cv2.VideoWriter_fourcc(*"mp4v"),
                                 max(1, fps / step), (width, height)
@@ -124,8 +167,6 @@ with video_tab:
                                 raise ValueError("สร้างไฟล์ MP4 ไม่ได้")
                         writer.write(marked)
 
-                        for row in get_rows(result):
-                            rows.append({"วินาที": round((frame_no - 1) / fps, 2), **row})
                         checked += 1
                         progress.progress(checked / limit)
                 finally:
@@ -148,11 +189,13 @@ with video_tab:
 
     if "video_result" in st.session_state:
         video_bytes, rows, checked = st.session_state["video_result"]
-        st.write(f"ตรวจ {checked} เฟรม · พบกล้วย {len(rows)} ครั้ง")
-        st.caption("กล้วยลูกเดิมอาจถูกนับซ้ำในหลายเฟรม")
+        st.write(f"ตรวจ {checked} เฟรม · กล้วยข้ามเส้น {len(rows)} ลูก")
+        st.write(f"ขึ้น {sum(row['ทิศทาง'] == 'ขึ้น' for row in rows)} · ลง {sum(row['ทิศทาง'] == 'ลง' for row in rows)}")
+        st.caption("นับเมื่อจุดกึ่งกลางกรอบข้ามเส้นแนวนอนกลางภาพ แต่ละ Track ID นับครั้งเดียว")
         st.video(video_bytes)
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True)
             csv = pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
             st.download_button("ดาวน์โหลดข้อมูล CSV", csv, "banana_video.csv", "text/csv")
         st.download_button("ดาวน์โหลดวิดีโอ MP4", video_bytes, "banana_video.mp4", "video/mp4")
+
