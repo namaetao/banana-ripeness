@@ -83,8 +83,10 @@ with image_tab:
 
 with video_tab:
     video = st.file_uploader("เลือกวิดีโอ", type=["mp4"])
-    step = st.selectbox("ตรวจทุกกี่เฟรม (เลือก 1 เพื่อติดตามได้แม่นยำสุด)", [1, 2, 5, 10])
+    fast_mode = st.checkbox("โหมดเร็ว (ย่อภาพวิดีโอและลดขนาดภาพที่โมเดลใช้)", value=True)
+    step = st.selectbox("ตรวจทุกกี่เฟรม (1 แม่นยำสุด)", [1, 2, 5, 10], index=1)
     limit = st.number_input("จำนวนเฟรมที่ตรวจสูงสุด", min_value=10, max_value=3000, value=900, step=10)
+    st.caption("โหมดเร็วและการข้ามเฟรมช่วยลดเวลา แต่กล้วยลูกเล็กหรือจังหวะข้ามเส้นอาจตรวจพลาด")
 
     if video and st.button("วิเคราะห์วิดีโอ"):
         st.session_state.pop("video_result", None)
@@ -124,9 +126,18 @@ with video_tab:
                         if (frame_no - 1) % step != 0:
                             continue
 
+                        if fast_mode:
+                            height, width = frame.shape[:2]
+                            ratio = min(1, 720 / max(height, width))
+                            new_width = max(2, int(width * ratio) // 2 * 2)
+                            new_height = max(2, int(height * ratio) // 2 * 2)
+                            if (new_width, new_height) != (width, height):
+                                frame = cv2.resize(frame, (new_width, new_height))
+
                         result = track_model.track(
                             frame, persist=True, tracker="bytetrack.yaml",
-                            conf=confidence, iou=iou, verbose=False
+                            conf=confidence, iou=iou,
+                            imgsz=416 if fast_mode else 640, verbose=False
                         )[0]
                         marked = result.plot()  # OpenCV ใช้ภาพแบบ BGR อยู่แล้ว
                         height, width = marked.shape[:2]
@@ -181,9 +192,12 @@ with video_tab:
                 if checked == 0:
                     raise ValueError("ไม่พบเฟรมที่ตรวจได้")
                 # MP4 จาก OpenCV มักเปิดในเบราว์เซอร์ไม่ได้ จึงแปลงเป็น H.264
+                progress.progress(1.0, text="กำลังบีบอัดวิดีโอ...")
                 subprocess.run([
                     imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
                     "-i", str(raw_file), "-an", "-c:v", "libx264",
+                    "-preset", "veryfast" if fast_mode else "medium",
+                    "-crf", "28" if fast_mode else "23",
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     str(output_file),
                 ], check=True, capture_output=True)
@@ -202,5 +216,3 @@ with video_tab:
             csv = pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
             st.download_button("ดาวน์โหลดข้อมูล CSV", csv, "banana_video.csv", "text/csv")
         st.download_button("ดาวน์โหลดวิดีโอ MP4", video_bytes, "banana_video.mp4", "video/mp4")
-
-
