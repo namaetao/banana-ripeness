@@ -85,11 +85,11 @@ with video_tab:
     video = st.file_uploader("เลือกวิดีโอ", type=["mp4"])
     fast_mode = st.checkbox("โหมดเร็ว (ย่อภาพวิดีโอและลดขนาดภาพที่โมเดลใช้)", value=True)
     step = st.selectbox("ตรวจทุกกี่เฟรม (1 แม่นยำสุด)", [1, 2, 5, 10], index=1)
-    limit = st.number_input("จำนวนเฟรมที่ตรวจสูงสุด", min_value=10, max_value=3000, value=900, step=10)
-    st.caption("โหมดเร็วและการข้ามเฟรมช่วยลดเวลา แต่กล้วยลูกเล็กหรือจังหวะข้ามเส้นอาจตรวจพลาด")
+    limit = st.number_input("จำนวนเฟรมที่ตรวจสูงสุด", min_value=10, max_value=3000, value=120, step=10)
+    st.caption("ถ้ารันบน Streamlit Cloud เริ่มที่ 120 เฟรมก่อน โหมดเร็วและการข้ามเฟรมอาจทำให้พลาดจังหวะข้ามเส้น")
 
     if video and st.button("วิเคราะห์วิดีโอ"):
-        st.session_state.pop("video_result", None)
+        st.session_state.pop("vertical_video_result", None)
         try:
             try:
                 import lap  # ByteTrack ใช้แพ็กเกจนี้จับคู่ Track ID
@@ -111,10 +111,10 @@ with video_tab:
                 frame_no = 0
                 checked = 0
                 rows = []  # เก็บเฉพาะกล้วยที่ข้ามเส้น
-                last_side = {}  # ID -> อยู่เหนือหรือใต้เส้น
+                last_side = {}  # ID -> อยู่ซ้ายหรือขวาของเส้น
                 counted_ids = set()
-                up_count = 0
-                down_count = 0
+                left_count = 0
+                right_count = 0
                 progress = st.progress(0)
 
                 try:
@@ -141,22 +141,22 @@ with video_tab:
                         )[0]
                         marked = result.plot()  # OpenCV ใช้ภาพแบบ BGR อยู่แล้ว
                         height, width = marked.shape[:2]
-                        middle = height // 2
+                        middle = width // 2
 
                         if result.boxes is not None and result.boxes.id is not None:
                             ids = result.boxes.id.int().cpu().tolist()
                             for box, track_id in zip(result.boxes, ids):
                                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                                center_y = (y1 + y2) / 2
-                                side = -1 if center_y < middle else 1
+                                center_x = (x1 + x2) / 2
+                                side = -1 if center_x < middle else 1
                                 before = last_side.get(track_id)
 
                                 if before is not None and before != side and track_id not in counted_ids:
-                                    direction = "ลง" if side == 1 else "ขึ้น"
+                                    direction = "ขวา" if side == 1 else "ซ้าย"
                                     if side == 1:
-                                        down_count += 1
+                                        right_count += 1
                                     else:
-                                        up_count += 1
+                                        left_count += 1
                                     counted_ids.add(track_id)
                                     rows.append({
                                         "วินาที": round((frame_no - 1) / fps, 2),
@@ -166,9 +166,9 @@ with video_tab:
                                     })
                                 last_side[track_id] = side
 
-                        # วาดเส้นกลางภาพและยอดนับลงบนทุกเฟรม
-                        cv2.line(marked, (0, middle), (width - 1, middle), (0, 255, 255), 2)
-                        label = f"Crossed: {len(counted_ids)}  Up: {up_count}  Down: {down_count}"
+                        # วาดเส้นแนวตั้งกลางภาพและยอดนับลงบนทุกเฟรม
+                        cv2.line(marked, (middle, 0), (middle, height - 1), (0, 255, 255), 2)
+                        label = f"Crossed: {len(counted_ids)}  Left: {left_count}  Right: {right_count}"
                         cv2.putText(marked, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.7, (0, 0, 0), 4)
                         cv2.putText(marked, label, (12, 32), cv2.FONT_HERSHEY_SIMPLEX,
@@ -201,15 +201,15 @@ with video_tab:
                     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                     str(output_file),
                 ], check=True, capture_output=True)
-                st.session_state["video_result"] = (output_file.read_bytes(), rows, checked)
+                st.session_state["vertical_video_result"] = (output_file.read_bytes(), rows, checked)
         except Exception as error:
             st.error(f"ตรวจวิดีโอไม่สำเร็จ: {error}")
 
-    if "video_result" in st.session_state:
-        video_bytes, rows, checked = st.session_state["video_result"]
+    if "vertical_video_result" in st.session_state:
+        video_bytes, rows, checked = st.session_state["vertical_video_result"]
         st.write(f"ตรวจ {checked} เฟรม · กล้วยข้ามเส้น {len(rows)} ลูก")
-        st.write(f"ขึ้น {sum(row['ทิศทาง'] == 'ขึ้น' for row in rows)} · ลง {sum(row['ทิศทาง'] == 'ลง' for row in rows)}")
-        st.caption("นับเมื่อจุดกึ่งกลางกรอบข้ามเส้นแนวนอนกลางภาพ แต่ละ Track ID นับครั้งเดียว")
+        st.write(f"ไปซ้าย {sum(row['ทิศทาง'] == 'ซ้าย' for row in rows)} · ไปขวา {sum(row['ทิศทาง'] == 'ขวา' for row in rows)}")
+        st.caption("นับเมื่อจุดกึ่งกลางกรอบข้ามเส้นแนวตั้งกลางภาพ แต่ละ Track ID นับครั้งเดียว")
         st.video(video_bytes)
         if rows:
             st.dataframe(pd.DataFrame(rows), hide_index=True)
