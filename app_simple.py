@@ -89,6 +89,10 @@ with video_tab:
     if video and st.button("วิเคราะห์วิดีโอ"):
         st.session_state.pop("video_result", None)
         try:
+            try:
+                import lap  # ByteTrack ใช้แพ็กเกจนี้จับคู่ Track ID
+            except ImportError:
+                raise RuntimeError("ต้องติดตั้ง lap ก่อน: python -m pip install lap")
             with tempfile.TemporaryDirectory() as folder:
                 input_file = Path(folder) / "input.mp4"
                 raw_file = Path(folder) / "raw.mp4"
@@ -198,4 +202,5 @@ with video_tab:
             csv = pd.DataFrame(rows).to_csv(index=False).encode("utf-8-sig")
             st.download_button("ดาวน์โหลดข้อมูล CSV", csv, "banana_video.csv", "text/csv")
         st.download_button("ดาวน์โหลดวิดีโอ MP4", video_bytes, "banana_video.mp4", "video/mp4")
+
 
